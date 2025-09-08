@@ -6,26 +6,31 @@
     <style>
         body { margin: 0; background-color: #111; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; overflow: hidden; }
         #gameCanvas { background-color: #1c2025; border: 1px solid #555; display: none; }
-        #lobby { color: white; text-align: center; background-color: rgba(40, 44, 52, 0.85); padding: 30px; border-radius: 10px; width: 500px; }
+        
+        /* ===== ИЗМЕНЕНИЕ ЗДЕСЬ ===== */
+        #lobby {
+            color: white; text-align: center; background-color: rgba(40, 44, 52, 0.85); 
+            padding: 30px; border-radius: 10px; width: 500px;
+            position: relative; /* Добавляем это свойство */
+            z-index: 10;      /* и это, чтобы лобби было гарантированно поверх всего */
+        }
+        /* ===== КОНЕЦ ИЗМЕНЕНИЯ ===== */
+
         #lobby h2 { margin-top: 0; }
         #lobby input { font-size: 1.2em; padding: 10px; margin: 10px; border: 1px solid #555; background: #333; color: white; border-radius: 5px; width: 80%; transition: border-color 0.2s; }
         #lobby button { font-size: 1.2em; padding: 10px 20px; margin: 5px; cursor: pointer; background: #61afef; color: #282c34; border: none; border-radius: 5px; transition: background-color 0.2s; }
         #lobby button:hover { background: #7cc5ff; }
         #lobby button:disabled { background: #555; cursor: not-allowed; }
-        #tooltip { position: absolute; background-color: rgba(0, 0, 0, 0.7); color: white; padding: 5px 10px; border-radius: 5px; font-size: 14px; display: none; pointer-events: none; }
-        
+        #tooltip { position: absolute; background-color: rgba(0, 0, 0, 0.7); color: white; padding: 5px 10px; border-radius: 5px; font-size: 14px; display: none; pointer-events: none; z-index: 100; }
         #chatContainer { position: absolute; bottom: 20px; left: 20px; width: 350px; display: none; }
         #chatInput { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.5); border: 1px solid #555; color: white; padding: 8px; font-size: 14px; border-radius: 5px; }
         #shipListContainer { max-height: 250px; overflow-y: auto; margin-top: 20px; background-color: rgba(0,0,0,0.3); border-radius: 5px; padding: 10px; text-align: left; }
-        .ship-item { background-color: #333; margin-bottom: 5px; padding: 10px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; transition: background-color 0.2s; }
-        .ship-item:hover { background-color: #4f5666; cursor: pointer; }
+        .ship-item { background-color: #333; margin-bottom: 5px; padding: 10px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
         .ship-item .name { font-weight: bold; }
-        .ship-item .details { font-size: 0.9em; color: #bbb; }
-        
-        .input-error {
-            border-color: #e06c75 !important;
-            box-shadow: 0 0 5px #e06c75;
-        }
+        .ship-item .details { font-size: 0.9em; color: #bbb; flex-grow: 1; margin-left: 15px; }
+        .input-error { border-color: #e06c75 !important; box-shadow: 0 0 5px #e06c75; }
+        .join-button { font-size: 0.9em !important; padding: 5px 15px !important; margin: 0 !important; background-color: #98c379 !important; }
+        .join-button:hover { background-color: #aee08c !important; }
     </style>
 </head>
 <body>
@@ -40,13 +45,11 @@
             <p>Загрузка списка кораблей...</p>
         </div>
     </div>
-
     <div id="chatContainer">
         <form id="chatForm">
             <input type="text" id="chatInput" placeholder="Нажмите Enter чтобы отправить..." maxlength="100">
         </form>
     </div>
-
     <canvas id="gameCanvas"></canvas>
     <div id="tooltip"></div>
 
@@ -69,7 +72,6 @@
         let selectedInventorySlot = 0;
         const mouse = { x: 0, y: 0, gridX: 0, gridY: 0 };
         let isChatFocused = false;
-        
         const WORLD_BOUNDS = { x_min: -2000, y_min: -2000, width: 4000, height: 4000 };
         let borderPattern = null;
 
@@ -90,10 +92,7 @@
         window.addEventListener('resize', resizeCanvas);
         
         function setupWebSocket() {
-            // ‼️ ВАЖНО: ЗАМЕНИТЕ АДРЕС НА ВАШ АДРЕС ИЗ GITHUB CODESPACES ‼️
-            // Например: wss://puro-mod-flyingship-qrvj7wjp37h9j-8765.app.github.dev
             ws = new WebSocket(`https://silver-succotash-pjggw5j496qv2r4r4-8765.app.github.dev/`);
-            
             ws.onopen = () => { console.log("Соединение WebSocket установлено."); };
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
@@ -124,43 +123,26 @@
                 myPlayerId = null;
                 setTimeout(setupWebSocket, 2000); 
             };
-            ws.onerror = (event) => {
-                console.error("Ошибка WebSocket:", event);
-            };
+            ws.onerror = (event) => { console.error("Ошибка WebSocket:", event); };
         }
 
         setupWebSocket();
         
         function enterGame(joinType, shipId = null) {
+            console.log(`Функция enterGame вызвана с типом: ${joinType}`);
             nicknameInput.classList.remove('input-error');
             shipNameInput.classList.remove('input-error');
-
-            const nickname = nicknameInput.value.trim();
-            if (!nickname) {
-                nicknameInput.classList.add('input-error');
-                alert('Пожалуйста, введите ваш ник!');
-                return;
-            }
-            
+            const nickname = nicknameInput.value.trim() || `Player${Math.floor(1000 + Math.random() * 9000)}`;
             let message = { type: joinType, nickname: nickname };
-
             if (joinType === 'create_ship') {
-                const name = shipNameInput.value.trim();
-                if (!name) {
-                    shipNameInput.classList.add('input-error');
-                    alert('Пожалуйста, введите название для вашего корабля!');
-                    return;
-                }
+                const name = shipNameInput.value.trim() || 'Безымянный корабль';
                 message.shipName = name;
             } else if (joinType === 'join_ship') {
-                if (!shipId) {
-                    alert('Произошла ошибка: ID корабля не был передан.');
-                    return;
-                }
+                if (!shipId) { alert('Произошла ошибка: ID корабля не был передан.'); return; }
                 message.shipId = shipId;
             }
-
             if (ws && ws.readyState === WebSocket.OPEN) {
+                console.log("Отправка данных на сервер:", message);
                 ws.send(JSON.stringify(message));
             } else {
                 alert("Соединение с сервером не установлено. Попробуйте обновить страницу.");
@@ -169,11 +151,11 @@
         
         function draw() {
             if (!myPlayerId || !gameState.players[myPlayerId]) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; };
-            const myPlayer = gameState.players[myPlayerId], myShip = gameState.ships[myPlayer.ship_id];
+            const myPlayer = gameState.players[myPlayerId];
+            const myShip = gameState.ships[myPlayer.ship_id];
             if (!myShip) return;
 
             if (!borderPattern) borderPattern = createBorderPattern();
-            
             camera.x = myShip.world_x; camera.y = myShip.world_y;
             ctx.save();
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -183,8 +165,8 @@
             
             const BORDER_THICKNESS = 400;
             ctx.fillStyle = borderPattern;
-            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min - BORDER_THICKNESS, WORLD_BOUNDS.width + BORDER_THICKNESS * 2, BORDER_THICKNESS);
-            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min + WORLD_BOUNDS.height, WORLD_BOUNDS.width + BORDER_THICKNESS * 2, BORDER_THICKNESS);
+            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min - BORDER_THICKNESS, WORLD_BOUNDS.width + 2 * BORDER_THICKNESS, BORDER_THICKNESS);
+            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min + WORLD_BOUNDS.height, WORLD_BOUNDS.width + 2 * BORDER_THICKNESS, BORDER_THICKNESS);
             ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min, BORDER_THICKNESS, WORLD_BOUNDS.height);
             ctx.fillRect(WORLD_BOUNDS.x_min + WORLD_BOUNDS.width, WORLD_BOUNDS.y_min, BORDER_THICKNESS, WORLD_BOUNDS.height);
 
@@ -208,7 +190,6 @@
                 if (ship.items_on_grid) { ship.items_on_grid.forEach(item => { const itemX = shipLeft + item.x * TILE_SIZE, itemY = shipTop + item.y * TILE_SIZE; if (item.type === 'cargo_hatch') { ctx.fillStyle = '#d2b48c'; ctx.fillRect(itemX + 5, itemY + 5, TILE_SIZE - 10, TILE_SIZE - 10); } }); }
                 if (ship.pilot && (ship.thrust_dir_x !== 0 || ship.thrust_dir_y !== 0)) { const flameLength = TILE_SIZE * (0.8 + Math.random() * 0.5); ctx.fillStyle = `rgba(255, 180, 0, ${0.6 + Math.random() * 0.4})`; ctx.strokeStyle = `rgba(255, 0, 0, ${0.4 + Math.random() * 0.2})`; ctx.lineWidth = 2; const engineBL_X = shipLeft, engineBL_Y = shipTop + (ship.height - 1) * TILE_SIZE; const engineTR_X = shipLeft + (ship.width - 1) * TILE_SIZE, engineTR_Y = shipTop; if (ship.grid[ship.height - 1][0] === 2) { if (ship.thrust_dir_x === -1) { ctx.beginPath(); ctx.moveTo(engineBL_X, engineBL_Y + TILE_SIZE * 0.2); ctx.lineTo(engineBL_X - flameLength, engineBL_Y + TILE_SIZE * 0.5); ctx.lineTo(engineBL_X, engineBL_Y + TILE_SIZE * 0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); } if (ship.thrust_dir_y === 1) { ctx.beginPath(); ctx.moveTo(engineBL_X + TILE_SIZE * 0.2, engineBL_Y + TILE_SIZE); ctx.lineTo(engineBL_X + TILE_SIZE * 0.5, engineBL_Y + TILE_SIZE + flameLength); ctx.lineTo(engineBL_X + TILE_SIZE * 0.8, engineBL_Y + TILE_SIZE); ctx.closePath(); ctx.fill(); ctx.stroke(); } } if (ship.grid[0][ship.width - 1] === 2) { if (ship.thrust_dir_x === 1) { ctx.beginPath(); ctx.moveTo(engineTR_X + TILE_SIZE, engineTR_Y + TILE_SIZE * 0.2); ctx.lineTo(engineTR_X + TILE_SIZE + flameLength, engineTR_Y + TILE_SIZE * 0.5); ctx.lineTo(engineTR_X + TILE_SIZE, engineTR_Y + TILE_SIZE * 0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); } if (ship.thrust_dir_y === -1) { ctx.beginPath(); ctx.moveTo(engineTR_X + TILE_SIZE * 0.2, engineTR_Y); ctx.lineTo(engineTR_X + TILE_SIZE * 0.5, engineTR_Y - flameLength); ctx.lineTo(engineTR_X + TILE_SIZE * 0.8, engineTR_Y); ctx.closePath(); ctx.fill(); ctx.stroke(); } } }
                 const helm = ship.components.helm; const helmCenterX = shipLeft + helm.x * TILE_SIZE + TILE_SIZE / 2, helmCenterY = shipTop + helm.y * TILE_SIZE + TILE_SIZE / 2; ctx.fillStyle = ship.pilot ? '#e06c75' : '#c678dd'; ctx.beginPath(); ctx.arc(helmCenterX, helmCenterY, TILE_SIZE * 0.4, 0, Math.PI * 2); ctx.fill();
-            
                 if (camera.zoom < 0.8) {
                     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
                     ctx.textAlign = 'center';
@@ -221,9 +202,8 @@
                     ctx.fillText(`{${ship.short_id}}`, ship.world_x, textY + nameFontSize);
                 }
             }
-            for (const playerId in gameState.players) { const player = gameState.players[playerId], playerShip = gameState.ships[player.ship_id]; if (!playerShip) continue; const shipLeft = playerShip.world_x - (playerShip.width * TILE_SIZE) / 2, shipTop = playerShip.world_y - (playerShip.height * TILE_SIZE) / 2; const playerAbsX = shipLeft + player.x * TILE_SIZE, playerAbsY = shipTop + player.y * TILE_SIZE, playerSize = TILE_SIZE * 0.8; ctx.fillStyle = player.color; ctx.fillRect(playerAbsX - playerSize / 2, playerAbsY - playerSize, playerSize, playerSize); ctx.fillStyle = 'white'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(player.nickname, playerAbsX, playerAbsY - playerSize - 5); if (player.piloting) { ctx.fillText("[PILOT]", playerAbsX, playerAbsY - playerSize - 20); } }
-            const selectedItem = myPlayer.inventory[selectedInventorySlot]; if (selectedItem) { const placeX = myShip.world_x - (myShip.width * TILE_SIZE) / 2 + mouse.gridX * TILE_SIZE; const placeY = myShip.world_y - (myShip.height * TILE_SIZE) / 2 + mouse.gridY * TILE_SIZE; ctx.globalAlpha = 0.5; ctx.fillStyle = '#98c379'; if (myShip.grid[mouse.gridY] && myShip.grid[mouse.gridY][mouse.gridX] !== 0) { ctx.fillStyle = '#e06c75'; } ctx.fillRect(placeX, placeY, TILE_SIZE, TILE_SIZE); ctx.globalAlpha = 1.0; }
-            
+            for (const playerId in gameState.players) { const player = gameState.players[playerId]; if (!player) continue; const playerShip = gameState.ships[player.ship_id]; if (!playerShip) continue; const shipLeft = playerShip.world_x - (playerShip.width * TILE_SIZE) / 2, shipTop = playerShip.world_y - (playerShip.height * TILE_SIZE) / 2; const playerAbsX = shipLeft + player.x * TILE_SIZE, playerAbsY = shipTop + player.y * TILE_SIZE, playerSize = TILE_SIZE * 0.8; ctx.fillStyle = player.color; ctx.fillRect(playerAbsX - playerSize / 2, playerAbsY - playerSize, playerSize, playerSize); ctx.fillStyle = 'white'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(player.nickname, playerAbsX, playerAbsY - playerSize - 5); if (player.piloting) { ctx.fillText("[PILOT]", playerAbsX, playerAbsY - playerSize - 20); } }
+            const selectedItem = myPlayer.inventory[selectedInventorySlot]; if (selectedItem) { const placeX = myShip.world_x - (myShip.width * TILE_SIZE) / 2 + mouse.gridX * TILE_SIZE; const placeY = myShip.world_y - (myShip.height * TILE_SIZE) / 2 + mouse.gridY * TILE_SIZE; ctx.globalAlpha = 0.5; ctx.fillStyle = '#98c379'; if (mouse.gridY >= 0 && mouse.gridY < myShip.grid.length && mouse.gridX >= 0 && mouse.gridX < myShip.grid[0].length && myShip.grid[mouse.gridY][mouse.gridX] !== 0) { ctx.fillStyle = '#e06c75'; } ctx.fillRect(placeX, placeY, TILE_SIZE, TILE_SIZE); ctx.globalAlpha = 1.0; }
             ctx.restore();
             
             drawInventory(myPlayer.inventory);
@@ -314,9 +294,9 @@
         
         canvas.addEventListener('mousemove', e => {
             mouse.x = e.clientX; mouse.y = e.clientY;
-            let somethingHovered = false;
             if (!myPlayerId || !gameState.players[myPlayerId]) return;
-            const myShip = gameState.ships[myPlayerId ? gameState.players[myPlayerId].ship_id : null];
+            const myPlayer = gameState.players[myPlayerId];
+            const myShip = gameState.ships[myPlayer.ship_id];
             if (!myShip) return;
             const worldMouseX = (mouse.x - canvas.width / 2) / camera.zoom + camera.x;
             const worldMouseY = (mouse.y - canvas.height / 2) / camera.zoom + camera.y;
@@ -324,18 +304,18 @@
             const shipTop = myShip.world_y - (myShip.height * TILE_SIZE) / 2;
             mouse.gridX = Math.floor((worldMouseX - shipLeft) / TILE_SIZE);
             mouse.gridY = Math.floor((worldMouseY - shipTop) / TILE_SIZE);
+            
+            let somethingHovered = false;
             const helm = myShip.components.helm;
             const helmCenterX = shipLeft + helm.x * TILE_SIZE + TILE_SIZE / 2;
             const helmCenterY = shipTop + helm.y * TILE_SIZE + TILE_SIZE / 2;
             const helmDistSq = (worldMouseX - helmCenterX)**2 + (worldMouseY - helmCenterY)**2;
             if (helmDistSq < (TILE_SIZE * 0.5)**2) { tooltip.textContent = "Helm"; somethingHovered = true; } 
-            else { if (myShip.grid[mouse.gridY] && myShip.grid[mouse.gridY][mouse.gridX]) { const tileType = myShip.grid[mouse.gridY][mouse.gridX]; if (tileType === 2) { tooltip.textContent = "Engine"; somethingHovered = true; } else if (tileType === 3) { tooltip.textContent = "Cargo Hatch"; somethingHovered = true; } } }
-            const mapSize = 150, mapX = canvas.width - mapSize - 20, mapY = canvas.height - mapSize - 20;
-            const myShipPercentX = (myShip.world_x - WORLD_BOUNDS.x_min) / WORLD_BOUNDS.width;
-            const myShipPercentY = (myShip.world_y - WORLD_BOUNDS.y_min) / WORLD_BOUNDS.height;
-            const myDotX = mapX + myShipPercentX * mapSize; const myDotY = mapY + myShipPercentY * mapSize;
-            const minimapDistSq = (mouse.x - myDotX)**2 + (mouse.y - myDotY)**2;
-            if (minimapDistSq < 10**2) { tooltip.textContent = "Player"; somethingHovered = true; }
+            else if (mouse.gridY >= 0 && mouse.gridY < myShip.grid.length && mouse.gridX >= 0 && mouse.gridX < myShip.grid[0].length && myShip.grid[mouse.gridY][mouse.gridX]) {
+                const tileType = myShip.grid[mouse.gridY][mouse.gridX];
+                if (tileType === 2) { tooltip.textContent = "Engine"; somethingHovered = true; }
+                else if (tileType === 3) { tooltip.textContent = "Cargo Hatch"; somethingHovered = true; }
+            }
             if (somethingHovered) { tooltip.style.display = 'block'; tooltip.style.left = `${mouse.x + 15}px`; tooltip.style.top = `${mouse.y}px`; } 
             else { tooltip.style.display = 'none'; }
         });
@@ -357,25 +337,29 @@
                 chatInput.value = '';
             }
         });
-
+        
         function updateShipList(ships) {
             shipListContainer.innerHTML = '';
             if (ships.length === 0) {
                 shipListContainer.innerHTML = '<p>Нет доступных кораблей. Создайте свой первый!</p>';
                 return;
             }
-
             ships.forEach(ship => {
                 const shipItem = document.createElement('div');
                 shipItem.className = 'ship-item';
-                shipItem.dataset.shipId = ship.id;
-                shipItem.innerHTML = `
+                const infoContainer = document.createElement('div');
+                infoContainer.innerHTML = `
                     <div class="name">${ship.name}</div>
                     <div class="details">ID: ${ship.short_id} | Игроков: ${ship.players_count}</div>
                 `;
-                shipItem.addEventListener('click', () => {
+                const joinButton = document.createElement('button');
+                joinButton.className = 'join-button';
+                joinButton.textContent = 'Join';
+                joinButton.addEventListener('click', () => {
                     enterGame('join_ship', ship.id);
                 });
+                shipItem.appendChild(infoContainer);
+                shipItem.appendChild(joinButton);
                 shipListContainer.appendChild(shipItem);
             });
         }
