@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Drednot.io Clone</title>
+    <style>
+        body { margin: 0; background-color: #111; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; overflow: hidden; }
+        #gameCanvas { background-color: #1c2025; border: 1px solid #555; display: none; }
+        #lobby { color: white; text-align: center; background-color: rgba(40, 44, 52, 0.85); padding: 30px; border-radius: 10px; width: 500px; }
+        #lobby h2 { margin-top: 0; }
+        #lobby input { font-size: 1.2em; padding: 10px; margin: 10px; border: 1px solid #555; background: #333; color: white; border-radius: 5px; width: 80%; transition: border-color 0.2s; }
+        #lobby button { font-size: 1.2em; padding: 10px 20px; margin: 5px; cursor: pointer; background: #61afef; color: #282c34; border: none; border-radius: 5px; transition: background-color 0.2s; }
+        #lobby button:hover { background: #7cc5ff; }
+        #lobby button:disabled { background: #555; cursor: not-allowed; }
+        #tooltip { position: absolute; background-color: rgba(0, 0, 0, 0.7); color: white; padding: 5px 10px; border-radius: 5px; font-size: 14px; display: none; pointer-events: none; }
+        
+        #chatContainer { position: absolute; bottom: 20px; left: 20px; width: 350px; display: none; }
+        #chatInput { width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.5); border: 1px solid #555; color: white; padding: 8px; font-size: 14px; border-radius: 5px; }
+        #shipListContainer { max-height: 250px; overflow-y: auto; margin-top: 20px; background-color: rgba(0,0,0,0.3); border-radius: 5px; padding: 10px; text-align: left; }
+        .ship-item { background-color: #333; margin-bottom: 5px; padding: 10px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; transition: background-color 0.2s; }
+        .ship-item:hover { background-color: #4f5666; cursor: pointer; }
+        .ship-item .name { font-weight: bold; }
+        .ship-item .details { font-size: 0.9em; color: #bbb; }
+        
+        .input-error {
+            border-color: #e06c75 !important;
+            box-shadow: 0 0 5px #e06c75;
+        }
+    </style>
+</head>
+<body>
+    <div id="lobby">
+        <h2>Космическая Верфь</h2>
+        <input type="text" id="nicknameInput" placeholder="Введите ваш ник" maxlength="15">
+        <input type="text" id="shipNameInput" placeholder="Название вашего корабля (при создании)" maxlength="20">
+        <br>
+        <button id="createShipButton">Создать новый корабль</button>
+        <h3>Доступные корабли:</h3>
+        <div id="shipListContainer">
+            <p>Загрузка списка кораблей...</p>
+        </div>
+    </div>
+
+    <div id="chatContainer">
+        <form id="chatForm">
+            <input type="text" id="chatInput" placeholder="Нажмите Enter чтобы отправить..." maxlength="100">
+        </form>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+    <div id="tooltip"></div>
+
+    <script>
+        const lobbyDiv = document.getElementById('lobby'),
+              canvas = document.getElementById('gameCanvas'),
+              nicknameInput = document.getElementById('nicknameInput'),
+              shipNameInput = document.getElementById('shipNameInput'),
+              createShipButton = document.getElementById('createShipButton'),
+              shipListContainer = document.getElementById('shipListContainer'),
+              tooltip = document.getElementById('tooltip'),
+              ctx = canvas.getContext('2d');
+
+        const chatContainer = document.getElementById('chatContainer'),
+              chatForm = document.getElementById('chatForm'),
+              chatInput = document.getElementById('chatInput');
+
+        let gameState = { players: {}, ships: {} }, ws = null, myPlayerId = null;
+        const keys = { up: false, left: false, right: false, down: false }, TILE_SIZE = 40, camera = { x: 0, y: 0, zoom: 1 };
+        let selectedInventorySlot = 0;
+        const mouse = { x: 0, y: 0, gridX: 0, gridY: 0 };
+        let isChatFocused = false;
+        
+        const WORLD_BOUNDS = { x_min: -2000, y_min: -2000, width: 4000, height: 4000 };
+        let borderPattern = null;
+
+        function createBorderPattern() {
+            const patternCanvas = document.createElement('canvas');
+            const pctx = patternCanvas.getContext('2d');
+            const size = 32;
+            patternCanvas.width = patternCanvas.height = size;
+            pctx.fillStyle = '#fdd835'; pctx.fillRect(0,0,size,size);
+            pctx.strokeStyle = '#212121'; pctx.lineWidth = size / 2;
+            pctx.beginPath(); pctx.moveTo(0, size); pctx.lineTo(size, 0); pctx.stroke();
+            pctx.beginPath(); pctx.moveTo(-size, size); pctx.lineTo(size, -size); pctx.stroke();
+            pctx.beginPath(); pctx.moveTo(0, size * 2); pctx.lineTo(size * 2, 0); pctx.stroke();
+            return ctx.createPattern(patternCanvas, 'repeat');
+        }
+
+        function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+        window.addEventListener('resize', resizeCanvas);
+        
+        function setupWebSocket() {
+            ws = new WebSocket(`ws://localhost:8765`);
+            ws.onopen = () => { console.log("Соединение WebSocket установлено."); };
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'init_player') {
+                    myPlayerId = data.playerId;
+                    gameState = data.initialState;
+                    lobbyDiv.style.display = 'none';
+                    canvas.style.display = 'block';
+                    chatContainer.style.display = 'block';
+                    resizeCanvas();
+                    if (!window.gameLoopRunning) { window.gameLoopRunning = true; gameLoop(); }
+                } else if (data.type === 'lobby_update') {
+                    updateShipList(data.availableShips);
+                } else if (data.error) {
+                    alert(data.error);
+                    if (ws) ws.close();
+                    lobbyDiv.style.display = 'block';
+                } else {
+                    gameState = data;
+                }
+            };
+            ws.onclose = () => {
+                console.log("Соединение закрыто или не удалось установить.");
+                lobbyDiv.style.display = 'block';
+                canvas.style.display = 'none';
+                chatContainer.style.display = 'none';
+                window.gameLoopRunning = false;
+                myPlayerId = null;
+                setTimeout(setupWebSocket, 2000); 
+            };
+            ws.onerror = (event) => {
+                console.error("Ошибка WebSocket:", event);
+            };
+        }
+
+        setupWebSocket();
+        
+        function enterGame(joinType, shipId = null) {
+            nicknameInput.classList.remove('input-error');
+            shipNameInput.classList.remove('input-error');
+
+            const nickname = nicknameInput.value.trim();
+            if (!nickname) {
+                nicknameInput.classList.add('input-error');
+                alert('Пожалуйста, введите ваш ник!');
+                return;
+            }
+            
+            let message = { type: joinType, nickname: nickname };
+
+            if (joinType === 'create_ship') {
+                const name = shipNameInput.value.trim();
+                if (!name) {
+                    shipNameInput.classList.add('input-error');
+                    alert('Пожалуйста, введите название для вашего корабля!');
+                    return;
+                }
+                message.shipName = name;
+            } else if (joinType === 'join_ship') {
+                if (!shipId) {
+                    alert('Произошла ошибка: ID корабля не был передан.');
+                    return;
+                }
+                message.shipId = shipId;
+            }
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+            } else {
+                alert("Соединение с сервером не установлено. Попробуйте обновить страницу.");
+            }
+        }
+        
+        function draw() {
+            if (!myPlayerId || !gameState.players[myPlayerId]) { ctx.clearRect(0, 0, canvas.width, canvas.height); return; };
+            const myPlayer = gameState.players[myPlayerId], myShip = gameState.ships[myPlayer.ship_id];
+            if (!myShip) return;
+
+            if (!borderPattern) borderPattern = createBorderPattern();
+            
+            camera.x = myShip.world_x; camera.y = myShip.world_y;
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.scale(camera.zoom, camera.zoom);
+            ctx.translate(-camera.x, -camera.y);
+            
+            const BORDER_THICKNESS = 400;
+            ctx.fillStyle = borderPattern;
+            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min - BORDER_THICKNESS, WORLD_BOUNDS.width + BORDER_THICKNESS * 2, BORDER_THICKNESS);
+            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min + WORLD_BOUNDS.height, WORLD_BOUNDS.width + BORDER_THICKNESS * 2, BORDER_THICKNESS);
+            ctx.fillRect(WORLD_BOUNDS.x_min - BORDER_THICKNESS, WORLD_BOUNDS.y_min, BORDER_THICKNESS, WORLD_BOUNDS.height);
+            ctx.fillRect(WORLD_BOUNDS.x_min + WORLD_BOUNDS.width, WORLD_BOUNDS.y_min, BORDER_THICKNESS, WORLD_BOUNDS.height);
+
+            for (const shipId in gameState.ships) {
+                const ship = gameState.ships[shipId];
+                const shipWidthPx = ship.width * TILE_SIZE, shipHeightPx = ship.height * TILE_SIZE;
+                const shipLeft = ship.world_x - shipWidthPx / 2, shipTop = ship.world_y - shipHeightPx / 2;
+                ctx.fillStyle = '#4B5263';
+                ctx.fillRect(shipLeft, shipTop, shipWidthPx, shipHeightPx);
+                if (ship.grid) {
+                    for (let row = 0; row < ship.height; row++) {
+                        for (let col = 0; col < ship.width; col++) {
+                            const tileX = shipLeft + col * TILE_SIZE, tileY = shipTop + row * TILE_SIZE;
+                            const tileType = ship.grid[row][col];
+                            if (tileType === 1) { ctx.fillStyle = '#5c6370'; ctx.fillRect(tileX, tileY, TILE_SIZE, TILE_SIZE); ctx.strokeStyle = '#3c4049'; ctx.strokeRect(tileX, tileY, TILE_SIZE, TILE_SIZE); } 
+                            else if (tileType === 2) { ctx.fillStyle = '#282c34'; ctx.fillRect(tileX, tileY, TILE_SIZE, TILE_SIZE); ctx.strokeStyle = '#61afef'; ctx.strokeRect(tileX, tileY, TILE_SIZE, TILE_SIZE); ctx.fillStyle = '#111'; if (row === ship.height - 1) ctx.fillRect(tileX + TILE_SIZE * 0.2, tileY + TILE_SIZE * 0.8, TILE_SIZE * 0.6, TILE_SIZE * 0.2); else if (row === 0) ctx.fillRect(tileX + TILE_SIZE * 0.2, tileY, TILE_SIZE * 0.6, TILE_SIZE * 0.2); if (col === 0) ctx.fillRect(tileX, tileY + TILE_SIZE * 0.2, TILE_SIZE * 0.2, TILE_SIZE * 0.6); else if (col === ship.width - 1) ctx.fillRect(tileX + TILE_SIZE * 0.8, tileY + TILE_SIZE * 0.2, TILE_SIZE * 0.2, TILE_SIZE * 0.6); } 
+                            else if (tileType === 3) { ctx.fillStyle = '#d2b48c'; ctx.fillRect(tileX, tileY, TILE_SIZE, TILE_SIZE); ctx.strokeStyle = '#8b4513'; ctx.lineWidth = 3; ctx.strokeRect(tileX, tileY, TILE_SIZE, TILE_SIZE); ctx.beginPath(); ctx.moveTo(tileX, tileY); ctx.lineTo(tileX + TILE_SIZE, tileY + TILE_SIZE); ctx.stroke(); ctx.moveTo(tileX + TILE_SIZE, tileY); ctx.lineTo(tileX, tileY + TILE_SIZE); ctx.stroke(); }
+                        }
+                    }
+                }
+                if (ship.items_on_grid) { ship.items_on_grid.forEach(item => { const itemX = shipLeft + item.x * TILE_SIZE, itemY = shipTop + item.y * TILE_SIZE; if (item.type === 'cargo_hatch') { ctx.fillStyle = '#d2b48c'; ctx.fillRect(itemX + 5, itemY + 5, TILE_SIZE - 10, TILE_SIZE - 10); } }); }
+                if (ship.pilot && (ship.thrust_dir_x !== 0 || ship.thrust_dir_y !== 0)) { const flameLength = TILE_SIZE * (0.8 + Math.random() * 0.5); ctx.fillStyle = `rgba(255, 180, 0, ${0.6 + Math.random() * 0.4})`; ctx.strokeStyle = `rgba(255, 0, 0, ${0.4 + Math.random() * 0.2})`; ctx.lineWidth = 2; const engineBL_X = shipLeft, engineBL_Y = shipTop + (ship.height - 1) * TILE_SIZE; const engineTR_X = shipLeft + (ship.width - 1) * TILE_SIZE, engineTR_Y = shipTop; if (ship.grid[ship.height - 1][0] === 2) { if (ship.thrust_dir_x === -1) { ctx.beginPath(); ctx.moveTo(engineBL_X, engineBL_Y + TILE_SIZE * 0.2); ctx.lineTo(engineBL_X - flameLength, engineBL_Y + TILE_SIZE * 0.5); ctx.lineTo(engineBL_X, engineBL_Y + TILE_SIZE * 0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); } if (ship.thrust_dir_y === 1) { ctx.beginPath(); ctx.moveTo(engineBL_X + TILE_SIZE * 0.2, engineBL_Y + TILE_SIZE); ctx.lineTo(engineBL_X + TILE_SIZE * 0.5, engineBL_Y + TILE_SIZE + flameLength); ctx.lineTo(engineBL_X + TILE_SIZE * 0.8, engineBL_Y + TILE_SIZE); ctx.closePath(); ctx.fill(); ctx.stroke(); } } if (ship.grid[0][ship.width - 1] === 2) { if (ship.thrust_dir_x === 1) { ctx.beginPath(); ctx.moveTo(engineTR_X + TILE_SIZE, engineTR_Y + TILE_SIZE * 0.2); ctx.lineTo(engineTR_X + TILE_SIZE + flameLength, engineTR_Y + TILE_SIZE * 0.5); ctx.lineTo(engineTR_X + TILE_SIZE, engineTR_Y + TILE_SIZE * 0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); } if (ship.thrust_dir_y === -1) { ctx.beginPath(); ctx.moveTo(engineTR_X + TILE_SIZE * 0.2, engineTR_Y); ctx.lineTo(engineTR_X + TILE_SIZE * 0.5, engineTR_Y - flameLength); ctx.lineTo(engineTR_X + TILE_SIZE * 0.8, engineTR_Y); ctx.closePath(); ctx.fill(); ctx.stroke(); } } }
+                const helm = ship.components.helm; const helmCenterX = shipLeft + helm.x * TILE_SIZE + TILE_SIZE / 2, helmCenterY = shipTop + helm.y * TILE_SIZE + TILE_SIZE / 2; ctx.fillStyle = ship.pilot ? '#e06c75' : '#c678dd'; ctx.beginPath(); ctx.arc(helmCenterX, helmCenterY, TILE_SIZE * 0.4, 0, Math.PI * 2); ctx.fill();
+            
+                if (camera.zoom < 0.8) {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                    ctx.textAlign = 'center';
+                    const nameFontSize = Math.min(35, 18 / camera.zoom);
+                    const idFontSize = Math.min(25, 14 / camera.zoom);
+                    const textY = shipTop - 20;
+                    ctx.font = `bold ${nameFontSize}px Arial`;
+                    ctx.fillText(ship.name, ship.world_x, textY);
+                    ctx.font = `${idFontSize}px Arial`;
+                    ctx.fillText(`{${ship.short_id}}`, ship.world_x, textY + nameFontSize);
+                }
+            }
+            for (const playerId in gameState.players) { const player = gameState.players[playerId], playerShip = gameState.ships[player.ship_id]; if (!playerShip) continue; const shipLeft = playerShip.world_x - (playerShip.width * TILE_SIZE) / 2, shipTop = playerShip.world_y - (playerShip.height * TILE_SIZE) / 2; const playerAbsX = shipLeft + player.x * TILE_SIZE, playerAbsY = shipTop + player.y * TILE_SIZE, playerSize = TILE_SIZE * 0.8; ctx.fillStyle = player.color; ctx.fillRect(playerAbsX - playerSize / 2, playerAbsY - playerSize, playerSize, playerSize); ctx.fillStyle = 'white'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(player.nickname, playerAbsX, playerAbsY - playerSize - 5); if (player.piloting) { ctx.fillText("[PILOT]", playerAbsX, playerAbsY - playerSize - 20); } }
+            const selectedItem = myPlayer.inventory[selectedInventorySlot]; if (selectedItem) { const placeX = myShip.world_x - (myShip.width * TILE_SIZE) / 2 + mouse.gridX * TILE_SIZE; const placeY = myShip.world_y - (myShip.height * TILE_SIZE) / 2 + mouse.gridY * TILE_SIZE; ctx.globalAlpha = 0.5; ctx.fillStyle = '#98c379'; if (myShip.grid[mouse.gridY] && myShip.grid[mouse.gridY][mouse.gridX] !== 0) { ctx.fillStyle = '#e06c75'; } ctx.fillRect(placeX, placeY, TILE_SIZE, TILE_SIZE); ctx.globalAlpha = 1.0; }
+            
+            ctx.restore();
+            
+            drawInventory(myPlayer.inventory);
+            drawMinimap(myPlayer);
+            drawChat(myShip);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.fillRect(mouse.x - 1, mouse.y - 10, 2, 20);
+            ctx.fillRect(mouse.x - 10, mouse.y - 1, 20, 2);
+        }
+
+        function drawInventory(inventory) {
+            const slotSize = 50, padding = 10;
+            const startX = (canvas.width - (slotSize * inventory.length + padding * (inventory.length - 1))) / 2;
+            const startY = canvas.height - slotSize - padding;
+            inventory.forEach((item, i) => {
+                const slotX = startX + i * (slotSize + padding);
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(slotX, startY, slotSize, slotSize);
+                if (i === selectedInventorySlot) {
+                    ctx.strokeStyle = '#61afef';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(slotX, startY, slotSize, slotSize);
+                }
+                if (item && item.type === 'cargo_hatch') {
+                    ctx.fillStyle = '#d2b48c';
+                    ctx.fillRect(slotX + 5, startY + 5, slotSize - 10, slotSize - 10);
+                }
+            });
+        }
+
+        function drawChat(myShip) {
+            if (!myShip || !myShip.chat_messages) return;
+            const chatX = 20, chatBottom = 60, lineHeight = 20, maxLines = 10;
+            const chatY = canvas.height - chatBottom;
+            ctx.font = '14px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            const messages = myShip.chat_messages;
+            const start = Math.max(0, messages.length - maxLines);
+            for(let i = start; i < messages.length; i++) {
+                const msg = messages[i];
+                const displayY = chatY - (messages.length - 1 - i) * lineHeight;
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                const textMetric = ctx.measureText(`${msg.nick}: ${msg.text}`);
+                ctx.fillRect(chatX - 2, displayY - lineHeight + 4, textMetric.width + 4, lineHeight);
+                ctx.fillStyle = msg.nick === 'System' ? '#98c379' : '#abb2bf';
+                ctx.fillText(`${msg.nick}: ${msg.text}`, chatX, displayY);
+            }
+        }
+
+        function drawMinimap(myPlayer) {
+            const myShip = gameState.ships[myPlayer.ship_id];
+            if (!myShip) return;
+            const mapSize = 150, mapX = canvas.width - mapSize - 20, mapY = canvas.height - mapSize - 20;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; ctx.fillRect(mapX, mapY, mapSize, mapSize);
+            ctx.strokeStyle = '#fff'; ctx.strokeRect(mapX, mapY, mapSize, mapSize);
+            for (const shipId in gameState.ships) {
+                const ship = gameState.ships[shipId];
+                const percentX = (ship.world_x - WORLD_BOUNDS.x_min) / WORLD_BOUNDS.width;
+                const percentY = (ship.world_y - WORLD_BOUNDS.y_min) / WORLD_BOUNDS.height;
+                const dotX = mapX + percentX * mapSize;
+                const dotY = mapY + percentY * mapSize;
+                ctx.fillStyle = (shipId === myPlayer.ship_id) ? 'white' : 'gray';
+                ctx.beginPath(); ctx.arc(dotX, dotY, 3, 0, 2 * Math.PI); ctx.fill();
+            }
+        }
+        function gameLoop() { if (window.gameLoopRunning) { draw(); requestAnimationFrame(gameLoop); } }
+        
+        createShipButton.addEventListener('click', () => enterGame('create_ship'));
+        
+        function sendInput() { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'input', keys: keys })); } }
+        
+        const keyMap = { 'w': 'up', 'ArrowUp': 'up', 'a': 'left', 'ArrowLeft': 'left', 'd': 'right', 'ArrowRight': 'right', 's': 'down', 'ArrowDown': 'down' };
+        
+        window.addEventListener('keydown', e => { 
+            if (isChatFocused) return;
+            if (e.key >= '1' && e.key <= '5') { selectedInventorySlot = parseInt(e.key) - 1; } 
+            let key = keyMap[e.key]; if (key && !keys[key]) { keys[key] = true; sendInput(); } 
+            if (e.key === 'e' || e.key === 'Е') { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'interact' })); } } 
+        });
+        window.addEventListener('keyup', e => { 
+            if (isChatFocused) return;
+            let key = keyMap[e.key]; 
+            if (key && keys[key]) { keys[key] = false; sendInput(); } 
+        });
+        
+        canvas.addEventListener('wheel', e => { e.preventDefault(); const zoomAmount = e.deltaY < 0 ? 1.1 : 0.9; camera.zoom *= zoomAmount; if (camera.zoom < 0.3) camera.zoom = 0.3; if (camera.zoom > 3) camera.zoom = 3; });
+        
+        canvas.addEventListener('mousemove', e => {
+            mouse.x = e.clientX; mouse.y = e.clientY;
+            let somethingHovered = false;
+            if (!myPlayerId || !gameState.players[myPlayerId]) return;
+            const myShip = gameState.ships[myPlayerId ? gameState.players[myPlayerId].ship_id : null];
+            if (!myShip) return;
+            const worldMouseX = (mouse.x - canvas.width / 2) / camera.zoom + camera.x;
+            const worldMouseY = (mouse.y - canvas.height / 2) / camera.zoom + camera.y;
+            const shipLeft = myShip.world_x - (myShip.width * TILE_SIZE) / 2;
+            const shipTop = myShip.world_y - (myShip.height * TILE_SIZE) / 2;
+            mouse.gridX = Math.floor((worldMouseX - shipLeft) / TILE_SIZE);
+            mouse.gridY = Math.floor((worldMouseY - shipTop) / TILE_SIZE);
+            const helm = myShip.components.helm;
+            const helmCenterX = shipLeft + helm.x * TILE_SIZE + TILE_SIZE / 2;
+            const helmCenterY = shipTop + helm.y * TILE_SIZE + TILE_SIZE / 2;
+            const helmDistSq = (worldMouseX - helmCenterX)**2 + (worldMouseY - helmCenterY)**2;
+            if (helmDistSq < (TILE_SIZE * 0.5)**2) { tooltip.textContent = "Helm"; somethingHovered = true; } 
+            else { if (myShip.grid[mouse.gridY] && myShip.grid[mouse.gridY][mouse.gridX]) { const tileType = myShip.grid[mouse.gridY][mouse.gridX]; if (tileType === 2) { tooltip.textContent = "Engine"; somethingHovered = true; } else if (tileType === 3) { tooltip.textContent = "Cargo Hatch"; somethingHovered = true; } } }
+            const mapSize = 150, mapX = canvas.width - mapSize - 20, mapY = canvas.height - mapSize - 20;
+            const myShipPercentX = (myShip.world_x - WORLD_BOUNDS.x_min) / WORLD_BOUNDS.width;
+            const myShipPercentY = (myShip.world_y - WORLD_BOUNDS.y_min) / WORLD_BOUNDS.height;
+            const myDotX = mapX + myShipPercentX * mapSize; const myDotY = mapY + myShipPercentY * mapSize;
+            const minimapDistSq = (mouse.x - myDotX)**2 + (mouse.y - myDotY)**2;
+            if (minimapDistSq < 10**2) { tooltip.textContent = "Player"; somethingHovered = true; }
+            if (somethingHovered) { tooltip.style.display = 'block'; tooltip.style.left = `${mouse.x + 15}px`; tooltip.style.top = `${mouse.y}px`; } 
+            else { tooltip.style.display = 'none'; }
+        });
+        canvas.addEventListener('click', e => {
+            if (!myPlayerId || !gameState.players[myPlayerId]) return;
+            const myPlayer = gameState.players[myPlayerId];
+            const selectedItem = myPlayer.inventory[selectedInventorySlot];
+            if (selectedItem) { ws.send(JSON.stringify({ type: 'place_item', slot: selectedInventorySlot, x: mouse.gridX, y: mouse.gridY })); }
+        });
+
+        chatInput.addEventListener('focus', () => { isChatFocused = true; });
+        chatInput.addEventListener('blur', () => { isChatFocused = false; });
+
+        chatForm.addEventListener('submit', e => {
+            e.preventDefault();
+            const text = chatInput.value.trim();
+            if (text && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'send_chat', text: text }));
+                chatInput.value = '';
+            }
+        });
+
+        function updateShipList(ships) {
+            shipListContainer.innerHTML = '';
+            if (ships.length === 0) {
+                shipListContainer.innerHTML = '<p>Нет доступных кораблей. Создайте свой первый!</p>';
+                return;
+            }
+
+            ships.forEach(ship => {
+                const shipItem = document.createElement('div');
+                shipItem.className = 'ship-item';
+                shipItem.dataset.shipId = ship.id;
+                shipItem.innerHTML = `
+                    <div class="name">${ship.name}</div>
+                    <div class="details">ID: ${ship.short_id} | Игроков: ${ship.players_count}</div>
+                `;
+                shipItem.addEventListener('click', () => {
+                    enterGame('join_ship', ship.id);
+                });
+                shipListContainer.appendChild(shipItem);
+            });
+        }
+    </script>
+</body>
+</html>
