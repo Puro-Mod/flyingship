@@ -90,7 +90,10 @@
         window.addEventListener('resize', resizeCanvas);
         
         function setupWebSocket() {
-            ws = new WebSocket(`ws://localhost:8765`);
+            // ‼️ ВАЖНО: ЗАМЕНИТЕ АДРЕС НА ВАШ АДРЕС ИЗ GITHUB CODESPACES ‼️
+            // Например: wss://puro-mod-flyingship-qrvj7wjp37h9j-8765.app.github.dev
+            ws = new WebSocket(`https://silver-succotash-pjggw5j496qv2r4r4-8765.app.github.dev/`);
+            
             ws.onopen = () => { console.log("Соединение WebSocket установлено."); };
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
